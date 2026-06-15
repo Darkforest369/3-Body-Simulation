@@ -4,94 +4,135 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="only dark">
-  <title>Orbital Sandbox: Pendulum Theme</title>
+  <title>Chaotic N-Body Sandbox: Gravitational Edition</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="ui-layer">
     <div class="panel-header" id="panelHeader">
-      <h2>ORBITAL PLAYGROUND</h2>
+      <h2>SIMULATION SETTINGS</h2>
       <span class="toggle-icon" id="toggleIcon">▲</span>
     </div>
 
     <div class="tab-header">
       <div class="tab-btn active" id="tabLiveBtn">CONTROLS</div>
-      <div class="tab-btn" id="tabPresetsBtn">PRESETS</div>
+      <div class="tab-btn" id="tabBodiesBtn">INITIAL CONDITIONS</div>
       <div class="tab-btn" id="tabEnvBtn">ENVIRONMENT</div>
+      <div class="tab-btn" id="tabGuideBtn">GUIDE</div>
     </div>
 
     <div class="panel-body">
-      <button id="actionBtn" class="mode-btn" style="background-color: #00ff7f; color: #000;">🚀 RELEASE ENGINE</button>
+      <button id="actionBtn" class="mode-btn">🚀 RELEASE ORBITS</button>
 
       <div id="pageControls">
-        <p>Click and drag in empty space to slingshot a new body (Max 5). Drag an existing body to move it.</p>
+        <p>Select an orbital configuration or toggle advanced runtime modifiers.</p>
         
-        <button id="trailsBtn" class="mode-btn active" style="background-color: #ff9900; color: #000;">Trails: ON</button>
-        <button id="gridBtn" class="mode-btn active" style="background-color: #e5ff00; color: #000;">Grid Overlay: ON</button>
-        <button id="clearBtn" class="mode-btn" style="background-color: #ff3366; color: #fff; margin-top: 5px;">💥 CLEAR ALL BODIES</button>
+        <div class="control-group">
+          <label>ORBITAL PRESETS</label>
+          <div class="preset-grid">
+            <button class="mode-btn preset-btn active" data-preset="figure8">♾️ Figure-Eight</button>
+            <button class="mode-btn preset-btn" data-preset="chaotic">🌀 Chaotic Trio</button>
+            <button class="mode-btn preset-btn" data-preset="lagrange">📐 Lagrange L4</button>
+            <button class="mode-btn preset-btn" data-preset="binary">🪐 Double Star</button>
+          </div>
+        </div>
 
-        <div class="control-group" style="margin-top: 15px; border-bottom: none;">
-          <label>NEW BODY MASS</label>
-          <div class="ratio-display" id="massDisplayTxt">Mass: 100</div>
+        <button id="trailsBtn" class="mode-btn active">Trails: ON</button>
+        <button id="gridBtn" class="mode-btn active">Grid: ON</button>
+        <button id="vectorsBtn" class="mode-btn active">Velocity Vectors: ON</button>
+      </div>
+
+      <div id="pageBodies" style="display: none;">
+        <p>Configure celestial bodies, masses, and configurations dynamically.</p>
+        
+        <div class="control-group">
+          <label>COSMIC POPULATION</label>
+          <div class="ratio-display" id="bodyCountTxt" style="color: #00e5ff;">3 BODIES</div>
           <div class="slider-row">
-            <span style="width: 45px;">Size</span>
+            <span>Count</span>
             <div class="slider-container">
-              <input type="range" id="spawnMassSlider" min="10" max="2500" step="10" value="100">
+              <input type="range" id="bodyCountSlider" min="2" max="5" step="1" value="3">
+              <div class="slider-ticks" data-ticks="4"></div>
             </div>
           </div>
         </div>
 
-        <div class="shortcut-legend">Hotkeys: Space=Run | C=Clear | T=Trails | G=Grid | 1-4=Presets</div>
-      </div>
-
-      <div id="pagePresets" style="display: none;">
-        <p>Instantiate a stable or chaotic mathematical orbital geometry (Max 5 bodies).</p>
-        <div class="preset-grid">
-          <button class="mode-btn preset-btn" data-preset="solar">☀️ Solar System</button>
-          <button class="mode-btn preset-btn" data-preset="figure8">♾️ Figure-8</button>
-          <button class="mode-btn preset-btn" data-preset="lagrange">📐 Lagrange L4</button>
-          <button class="mode-btn preset-btn" data-preset="chaos">🌀 Chaotic Triple</button>
-        </div>
+        <div id="bodyControlContainer"></div>
       </div>
 
       <div id="pageEnv" style="display: none;">
+        <p>Alter the fundamental laws governing this gravitational engine.</p>
+        
         <div class="control-group">
           <label>GRAVITATIONAL CONSTANT (G)</label>
-          <div class="ratio-display" id="gTxt">1.00</div>
+          <div class="ratio-display" id="gTxt">10.00</div>
           <div class="slider-row">
-            <span style="width: 45px;">Gravity</span>
+            <span>G Force</span>
             <div class="slider-container">
-              <input type="range" id="gSlider" min="0.1" max="5.0" step="0.1" value="1.0">
+              <input type="range" id="gSlider" min="1" max="50" step="0.5" value="10">
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>COLLISION SOFTENING (Stability)</label>
+          <div class="ratio-display" id="softeningTxt">15.0 px</div>
+          <div class="slider-row">
+            <span>Softening</span>
+            <div class="slider-container">
+              <input type="range" id="softeningSlider" min="0" max="50" step="1" value="15">
             </div>
           </div>
         </div>
 
         <div class="control-group" style="border-bottom: none;">
-          <label>COLLISION SOFTENING (ε)</label>
-          <p style="font-size: 10px; color: #888; margin-bottom: 5px;">Prevents infinite acceleration singularities.</p>
-          <div class="ratio-display" id="softeningTxt">15 px</div>
+          <label>WARP SPEED (Substeps)</label>
+          <div class="ratio-display" id="substepsTxt">10 steps/frame</div>
           <div class="slider-row">
-            <span style="width: 45px;">Buffer</span>
+            <span>Precision</span>
             <div class="slider-container">
-              <input type="range" id="softeningSlider" min="1" max="50" step="1" value="15">
+              <input type="range" id="substepsSlider" min="1" max="30" step="1" value="10">
             </div>
           </div>
         </div>
       </div>
 
+      <div id="pageGuide" style="display: none;">
+        <div class="control-group">
+          <label>KEYBOARD SHORTCUTS</label>
+          <div class="guide-row"><span class="guide-key">Space</span><span>Release / Pause simulation</span></div>
+          <div class="guide-row"><span class="guide-key">R</span><span>Reset current preset layout</span></div>
+          <div class="guide-row"><span class="guide-key">T</span><span>Toggle Trails view</span></div>
+          <div class="guide-row"><span class="guide-key">G</span><span>Toggle Grid Alignment</span></div>
+        </div>
+
+        <div class="control-group" style="border-bottom: none;">
+          <label>MOUSE &amp; TOUCH INTERACTIONS</label>
+          <div class="guide-row"><span class="guide-key">Drag Body</span><span>Reposition any object (while paused)</span></div>
+          <div class="guide-row"><span class="guide-key">Drag Arrow</span><span>Adjust velocity vector directly (while paused)</span></div>
+          <div class="guide-row"><span class="guide-key">Scroll</span><span>Zoom view window (0.2× – 5×)</span></div>
+        </div>
+      </div>
     </div>
   </div>
 
   <div id="telemetry-control">
-    <button id="telemetryBtn">TELEMETRY: ON</button>
-  </div>
-
-  <div id="telemetry-panel">
-    <h3>System Telemetry</h3>
-    <p>Tracking spatial metrics across orbital bodies.</p>
-    <div class="telemetry-stat">Bodies Active: <span id="telCount" style="color: #00e5ff; font-weight: bold;">0 / 5</span></div>
-    <div class="telemetry-stat" style="margin-top: 5px;">Total Energy: <span id="telEnergy" style="color: #00ff7f; font-weight: bold;">0.00 J</span></div>
-    <div id="colorLegends" style="margin-top: 10px;"></div>
+    <div id="telemetry-dropdown" style="display: none;">
+      <div class="telem-label">TELEMETRY DIAGRAMS</div>
+      <div class="telem-row" id="rowEnergy">
+        <div class="telem-pip on" id="pipEnergy"></div>
+        <span>Net Energy Tracking</span>
+      </div>
+      <div class="telem-row" id="rowCom">
+        <div class="telem-pip on" id="pipCom"></div>
+        <span>Center of Mass Indicator</span>
+      </div>
+      <div class="telem-row" id="rowFps">
+        <div class="telem-pip on" id="pipFps"></div>
+        <span>Real-time FPS Engine</span>
+      </div>
+    </div>
+    <button id="telemetryBtn">TELEMETRY ▲</button>
   </div>
 
   <canvas id="canvas"></canvas>
