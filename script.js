@@ -89,10 +89,10 @@ function createWallBetweenPoints(p1, p2, labelStr = "bound") {
     const midX = p1.x + dx / 2;
     const midY = p1.y + dy / 2;
     
-    return Bodies.rectangle(midX, midY, length + 4, WALL_THICKNESS, {
+    return Bodies.rectangle(midX, midY, length + 8, WALL_THICKNESS * 1.4, {
         isStatic: true,
         angle: angle,
-        friction: 0.12,
+        friction: 0.18,
         restitution: 0.08,
         label: labelStr
     });
@@ -122,16 +122,16 @@ function buildMatrix() {
     const binOuterEdge = halfWidth + SPACING_X;
     const bottomPegY = START_Y + (PEG_ROWS - 1) * SPACING_Y;
 
-    const neckHalfWidth = BALL_RADIUS * 5.2;
+    const neckHalfWidth = BALL_RADIUS * 6.5;
     const topWallY = START_Y - 280;
-    const funnelMidY = START_Y - 90;
-    const funnelMidX = cx - neckHalfWidth * 2.35;
-    const funnelShoulderY = START_Y - 40;
-    const funnelShoulderX = cx - neckHalfWidth * 1.5;
+    const funnelMidY = START_Y - 110;
+    const funnelMidX = cx - neckHalfWidth * 2.8;
+    const funnelShoulderY = START_Y - 52;
+    const funnelShoulderX = cx - neckHalfWidth * 1.8;
 
     leftBoundaryPts = [
         { x: cx - HOPPER_WIDTH, y: topWallY },
-        { x: cx - HOPPER_WIDTH, y: START_Y - 140 },
+        { x: cx - HOPPER_WIDTH, y: START_Y - 170 },
         { x: funnelMidX, y: funnelMidY },
         { x: funnelShoulderX, y: funnelShoulderY },
         { x: cx - neckHalfWidth, y: START_Y - 18 },
@@ -149,15 +149,36 @@ function buildMatrix() {
         World.add(engine.world, createWallBetweenPoints(rightBoundaryPts[i], rightBoundaryPts[i+1]));
     }
 
-    const topWall = Bodies.rectangle(cx, topWallY - WALL_THICKNESS / 2, HOPPER_WIDTH * 2 + 40, WALL_THICKNESS, {
+    const topWall = Bodies.rectangle(cx, topWallY - WALL_THICKNESS / 2, HOPPER_WIDTH * 2 + 40, WALL_THICKNESS * 1.2, {
         isStatic: true,
-        friction: 0.12,
+        friction: 0.18,
         restitution: 0.08,
         label: "bound"
     });
     World.add(engine.world, topWall);
 
-    gate = Bodies.rectangle(cx, START_Y - 48, neckHalfWidth * 2 + 22, WALL_THICKNESS, {
+    const hopperLeftWall = Bodies.rectangle(cx - HOPPER_WIDTH + 9, START_Y - 170, WALL_THICKNESS * 1.4, 300, {
+        isStatic: true,
+        friction: 0.18,
+        restitution: 0.06,
+        label: "bound"
+    });
+    const hopperRightWall = Bodies.rectangle(cx + HOPPER_WIDTH - 9, START_Y - 170, WALL_THICKNESS * 1.4, 300, {
+        isStatic: true,
+        friction: 0.18,
+        restitution: 0.06,
+        label: "bound"
+    });
+    const hopperFloor = Bodies.rectangle(cx, START_Y - 120, HOPPER_WIDTH * 2 - 28, WALL_THICKNESS / 1.5, {
+        isStatic: true,
+        friction: 0.22,
+        restitution: 0.05,
+        label: "bound"
+    });
+
+    World.add(engine.world, [hopperLeftWall, hopperRightWall, hopperFloor]);
+
+    gate = Bodies.rectangle(cx, START_Y - 45, neckHalfWidth * 2 + 36, WALL_THICKNESS * 1.1, {
         isStatic: true,
         friction: 0.08,
         restitution: 0.06,
@@ -185,11 +206,13 @@ function buildMatrix() {
 
 // Instantly preload the entire rectangular hopper uniformly
 function populateHopper() {
-    const usableWidth = (HOPPER_WIDTH * 2) - BALL_RADIUS * 2 - 16;
+    const sidePadding = BALL_RADIUS * 6 + 14;
+    const leftBound = cx - HOPPER_WIDTH + sidePadding;
+    const rightBound = cx + HOPPER_WIDTH - sidePadding;
     const spacing = BALL_RADIUS * 2.15;
-    const cols = Math.max(1, Math.floor(usableWidth / spacing));
-    const startX = cx - usableWidth / 2 + BALL_RADIUS + 6;
-    const startY = START_Y - 110;
+    const cols = Math.max(1, Math.floor((rightBound - leftBound) / spacing));
+    const startX = leftBound + BALL_RADIUS;
+    const startY = START_Y - 140;
 
     const hopperTopY = START_Y - 280 + BALL_RADIUS + 2;
     const maxRows = Math.max(1, Math.floor((startY - hopperTopY) / spacing) + 1);
@@ -291,6 +314,24 @@ function renderLoop() {
     ctx.restore();
 
     const bodies = Composite.allBodies(engine.world);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(0, 229, 255, 0.9)";
+    ctx.lineWidth = 3;
+    ctx.shadowColor = "rgba(0, 229, 255, 0.35)";
+    ctx.shadowBlur = 8;
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        if (b.isStatic && b.label === "bound" && b.vertices.length > 0) {
+            ctx.beginPath();
+            ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
+            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+
     ctx.save();
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
@@ -303,7 +344,7 @@ function renderLoop() {
         } else if (b.label === "ball") {
             ctx.beginPath();
             ctx.arc(b.position.x, b.position.y, BALL_RADIUS, 0, Math.PI * 2);
-            ctx.fillStyle = "#00e5ff"; 
+            ctx.fillStyle = "#00e5ff";
             ctx.fill();
         } else if (b.label === "gate") {
             ctx.beginPath();
@@ -314,23 +355,52 @@ function renderLoop() {
             ctx.shadowColor = "#ff3366";
             ctx.shadowBlur = 10;
             ctx.fill();
-        } else if (b.label === "bound" && b.vertices.length > 0) {
-            if (b.position.y > START_Y + 100 && b.position.x > leftBoundaryPts[4].x + 5 && b.position.x < rightBoundaryPts[4].x - 5) {
-                ctx.beginPath();
-                ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
-                for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
-                ctx.closePath();
-                ctx.fillStyle = "rgba(0, 229, 255, 0.1)"; 
-                ctx.strokeStyle = "rgba(0, 229, 255, 0.4)";
-                ctx.lineWidth = 1;
-                ctx.fill();
-                ctx.stroke();
-            }
         }
     }
     ctx.restore();
 
-    // Mathematically Accurate Red Distribution Curve 
+    // Draw static boundary bodies clearly so the funnel and hopper are visible.
+    ctx.save();
+    ctx.strokeStyle = "rgba(0, 229, 255, 0.55)";
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = "rgba(0, 229, 255, 0.35)";
+    ctx.shadowBlur = 8;
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        if (b.isStatic && b.label === "bound" && b.vertices.length > 0) {
+            ctx.beginPath();
+            ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
+            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+
+    const bottomRowWidth = (PEG_ROWS - 1) * SPACING_X;
+    const halfWidth = bottomRowWidth / 2;
+    const binOuterEdge = halfWidth + SPACING_X;
+    const binStartY = START_Y + (PEG_ROWS - 1) * SPACING_Y + 15;
+    const bins = new Array(PEG_ROWS + 1).fill(0);
+
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        if (b.label === "ball" && b.position.y > binStartY) {
+            const idx = Math.floor((b.position.x - (cx - binOuterEdge)) / SPACING_X);
+            if (idx >= 0 && idx < bins.length) bins[idx]++;
+        }
+    }
+
+    const maxBin = Math.max(...bins, 1);
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 51, 102, 0.16)";
+    for (let i = 0; i < bins.length; i++) {
+        const x = cx - binOuterEdge + i * SPACING_X;
+        const barHeight = (bins[i] / maxBin) * 90;
+        ctx.fillRect(x + 1, canvas.height - barHeight - 2, SPACING_X - 2, barHeight);
+    }
+    ctx.restore();
+
     if (showCurveOverlay) {
         ctx.save();
         ctx.strokeStyle = "#ff3366";
