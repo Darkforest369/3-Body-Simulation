@@ -1,15 +1,13 @@
-const { Engine, World, Bodies, Composite, Runner } = Matter;
+const { Engine, World, Bodies, Composite, Runner, Body } = Matter;
 
+// DOM elements
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-
-const ballSlider = document.getElementById("ballSlider");
-const ballCountTxt = document.getElementById("ballCountTxt");
 const actionBtn = document.getElementById("actionBtn");
 const resetBtn = document.getElementById("resetBtn");
 const curveBtn = document.getElementById("curveBtn");
-
-// UI Mapping
+const ballSlider = document.getElementById("ballSlider");
+const ballCountTxt = document.getElementById("ballCountTxt");
 const tabLiveBtn = document.getElementById("tabLiveBtn");
 const tabGuideBtn = document.getElementById("tabGuideBtn");
 const pageControls = document.getElementById("pageControls");
@@ -17,40 +15,60 @@ const pageGuide = document.getElementById("pageGuide");
 const panelHeader = document.getElementById("panelHeader");
 const uiLayer = document.getElementById("ui-layer");
 
+// ========== CONFIGURATION ==========
+const PEG_ROWS = 14;
+const PEG_RADIUS = 2.5;
+const BALL_RADIUS = 4;
+const SPACING_X = 20;
+const SPACING_Y = 22;
+const START_Y = 280;
+const WALL_THICKNESS = 8;
+const HOPPER_WIDTH = 130;
+const RELEASE_DELAY_MS = 100;
+
 let engine, runner;
 let cx, cy;
-
-// ==========================================
-// SCALED BINOMIAL CONFIGURATION
-// ==========================================
-const PEG_ROWS = 15;        
-const PEG_RADIUS = 2.5;     
-const BALL_RADIUS = 3.5;    
-const SPACING_X = 20;       
-const SPACING_Y = 20;       
-const START_Y = 300;        
-const WALL_THICKNESS = 8;
-const HOPPER_WIDTH = 160;   
-
 let targetBallCount = parseInt(ballSlider.value);
 let isRunning = false;
-let showCurveOverlay = false;
-let gate = null; 
+let showCurve = false;
+let ballQueue = [];
+let releaseInterval = null;
+let activeBalls = 0;
+let releasedCount = 0;
+let leftBoundaryPts = [], rightBoundaryPts = [];
 
-// Geometric Arrays
-let leftBoundaryPts = [];
-let rightBoundaryPts = [];
+// ---------- UI handling (unchanged) ----------
+ballSlider.addEventListener("input", (e) => {
+    ballCountTxt.textContent = `${e.target.value} BALLS`;
+});
+ballSlider.addEventListener("change", (e) => {
+    targetBallCount = parseInt(e.target.value);
+    resetSimulation();
+});
+actionBtn.addEventListener("click", () => {
+    if (!isRunning && ballQueue.length) releaseBalls();
+});
+resetBtn.addEventListener("click", resetSimulation);
+curveBtn.addEventListener("click", () => {
+    showCurve = !showCurve;
+    curveBtn.innerText = showCurve ? "Curve Overlay: ON" : "Curve Overlay: OFF";
+    curveBtn.classList.toggle("active", showCurve);
+});
+window.addEventListener("keydown", (e) => {
+    const key = e.key.toLowerCase();
+    if (key === " ") { e.preventDefault(); actionBtn.click(); }
+    if (key === "c") { e.preventDefault(); curveBtn.click(); }
+    if (key === "r") { e.preventDefault(); resetBtn.click(); }
+});
+window.addEventListener("resize", () => { resizeViewport(); resetSimulation(); });
 
-// UI Logic
 panelHeader.addEventListener("click", () => uiLayer.classList.toggle("collapsed"));
-
 tabLiveBtn.addEventListener("click", () => {
     tabLiveBtn.classList.add("active");
     tabGuideBtn.classList.remove("active");
     pageControls.style.display = "block";
     pageGuide.style.display = "none";
 });
-
 tabGuideBtn.addEventListener("click", () => {
     tabGuideBtn.classList.add("active");
     tabLiveBtn.classList.remove("active");
@@ -58,398 +76,374 @@ tabGuideBtn.addEventListener("click", () => {
     pageGuide.style.display = "block";
 });
 
-// Update Text instantly while dragging
-ballSlider.addEventListener("input", (e) => {
-    ballCountTxt.textContent = `${e.target.value} BALLS`;
-});
-
-// Re-render the balls ONLY when the user finishes dragging the slider
-ballSlider.addEventListener("change", (e) => {
-    targetBallCount = parseInt(e.target.value);
-    resetSimulation();
-});
-
-function resizeViewport() {
-    const viewportHeight = window.visualViewport?.height || window.innerHeight;
-    const viewportWidth = window.visualViewport?.width || window.innerWidth;
-    
-    document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
-    canvas.width = viewportWidth;
-    canvas.height = viewportHeight;
-    cx = canvas.width / 2;
-    cy = canvas.height / 2;
-}
-
-// Helper: Line segments for continuous casing
-function createWallBetweenPoints(p1, p2, labelStr = "bound") {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const length = Math.sqrt(dx * dx + dy * dy);
+// ---------- Helper: sealed walls ----------
+function createSealedWall(p1, p2, label) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const length = Math.hypot(dx, dy);
     const angle = Math.atan2(dy, dx);
-    const midX = p1.x + dx / 2;
-    const midY = p1.y + dy / 2;
-    
-    return Bodies.rectangle(midX, midY, length + 8, WALL_THICKNESS * 1.4, {
-        isStatic: true,
-        angle: angle,
-        friction: 0.18,
-        restitution: 0.08,
-        label: labelStr
+    const midX = p1.x + dx / 2, midY = p1.y + dy / 2;
+    return Bodies.rectangle(midX, midY, length + 12, WALL_THICKNESS, {
+        isStatic: true, angle: angle,
+        friction: 0, restitution: 0.05,
+        label: label
     });
 }
 
+// ---------- Build the board (always creates a fresh gate) ----------
 function buildMatrix() {
-    if (engine) World.clear(engine.world);
+    if (!engine) return;
+    const all = Composite.allBodies(engine.world);
+    const toRemove = all.filter(b => !b.isStatic);
+    World.remove(engine.world, toRemove);
 
-    // 1. Triangular Peg Matrix
+    // Pegs
     for (let r = 0; r < PEG_ROWS; r++) {
-        let pegsInRow = r + 1; 
-        let rowWidth = (pegsInRow - 1) * SPACING_X;
-        let startX = cx - rowWidth / 2;
-
-        for (let c = 0; c < pegsInRow; c++) {
-            let px = startX + c * SPACING_X;
-            let py = START_Y + r * SPACING_Y;
-            let peg = Bodies.circle(px, py, PEG_RADIUS, {
-                isStatic: true, restitution: 0.18, friction: 0.06, label: "peg"
+        const pegs = r + 1;
+        const rowW = (pegs - 1) * SPACING_X;
+        const startX = cx - rowW / 2;
+        for (let c = 0; c < pegs; c++) {
+            const px = startX + c * SPACING_X;
+            const py = START_Y + r * SPACING_Y;
+            const peg = Bodies.circle(px, py, PEG_RADIUS, {
+                isStatic: true, restitution: 0.45, friction: 0.01, label: "peg"
             });
             World.add(engine.world, peg);
         }
     }
 
-    const bottomRowWidth = (PEG_ROWS - 1) * SPACING_X;
-    const halfWidth = bottomRowWidth / 2;
-    const binOuterEdge = halfWidth + SPACING_X;
+    const bottomRowW = (PEG_ROWS - 1) * SPACING_X;
+    const halfW = bottomRowW / 2;
+    const outerBin = halfW + SPACING_X + 15;
     const bottomPegY = START_Y + (PEG_ROWS - 1) * SPACING_Y;
+    const neckW = BALL_RADIUS * 4.8;
 
-    const neckHalfWidth = BALL_RADIUS * 6.5;
-    const topWallY = START_Y - 280;
-    const funnelMidY = START_Y - 110;
-    const funnelMidX = cx - neckHalfWidth * 2.8;
-    const funnelShoulderY = START_Y - 52;
-    const funnelShoulderX = cx - neckHalfWidth * 1.8;
-
+    // Outer boundaries
     leftBoundaryPts = [
-        { x: cx - HOPPER_WIDTH, y: topWallY },
-        { x: cx - HOPPER_WIDTH, y: START_Y - 170 },
-        { x: funnelMidX, y: funnelMidY },
-        { x: funnelShoulderX, y: funnelShoulderY },
-        { x: cx - neckHalfWidth, y: START_Y - 18 },
-        { x: cx - binOuterEdge, y: bottomPegY },
-        { x: cx - binOuterEdge, y: canvas.height + 50 }
+        { x: cx - HOPPER_WIDTH, y: -300 },
+        { x: cx - HOPPER_WIDTH, y: START_Y - 180 },
+        { x: cx - neckW, y: START_Y - 50 },
+        { x: cx - neckW, y: START_Y - 20 },
+        { x: cx - outerBin, y: bottomPegY + 5 },
+        { x: cx - outerBin, y: canvas.height + 150 }
     ];
-
-    rightBoundaryPts = leftBoundaryPts.map(pt => ({
-        x: cx + (cx - pt.x),
-        y: pt.y
-    }));
+    rightBoundaryPts = leftBoundaryPts.map(p => ({ x: cx + (cx - p.x), y: p.y }));
 
     for (let i = 0; i < leftBoundaryPts.length - 1; i++) {
-        World.add(engine.world, createWallBetweenPoints(leftBoundaryPts[i], leftBoundaryPts[i+1]));
-        World.add(engine.world, createWallBetweenPoints(rightBoundaryPts[i], rightBoundaryPts[i+1]));
+        World.add(engine.world, createSealedWall(leftBoundaryPts[i], leftBoundaryPts[i+1], "bound"));
+        World.add(engine.world, createSealedWall(rightBoundaryPts[i], rightBoundaryPts[i+1], "bound"));
     }
 
-    const topWall = Bodies.rectangle(cx, topWallY - WALL_THICKNESS / 2, HOPPER_WIDTH * 2 + 40, WALL_THICKNESS * 1.2, {
-        isStatic: true,
-        friction: 0.18,
-        restitution: 0.08,
-        label: "bound"
-    });
-    World.add(engine.world, topWall);
-
-    const hopperLeftWall = Bodies.rectangle(cx - HOPPER_WIDTH + 9, START_Y - 170, WALL_THICKNESS * 1.4, 300, {
-        isStatic: true,
-        friction: 0.18,
-        restitution: 0.06,
-        label: "bound"
-    });
-    const hopperRightWall = Bodies.rectangle(cx + HOPPER_WIDTH - 9, START_Y - 170, WALL_THICKNESS * 1.4, 300, {
-        isStatic: true,
-        friction: 0.18,
-        restitution: 0.06,
-        label: "bound"
-    });
-    const hopperFloor = Bodies.rectangle(cx, START_Y - 120, HOPPER_WIDTH * 2 - 28, WALL_THICKNESS / 1.5, {
-        isStatic: true,
-        friction: 0.22,
-        restitution: 0.05,
-        label: "bound"
-    });
-
-    World.add(engine.world, [hopperLeftWall, hopperRightWall, hopperFloor]);
-
-    gate = Bodies.rectangle(cx, START_Y - 45, neckHalfWidth * 2 + 36, WALL_THICKNESS * 1.1, {
-        isStatic: true,
-        friction: 0.08,
-        restitution: 0.06,
-        label: "gate"
+    // Gate (fresh body)
+    const gate = Bodies.rectangle(cx, START_Y - 35, neckW * 2 + 10, WALL_THICKNESS, {
+        isStatic: true, friction: 0, restitution: 0, label: "gate"
     });
     World.add(engine.world, gate);
 
-    // 5. Vertical Bin Dividers
-    const binStartY = bottomPegY + 15;
-    const binHeight = canvas.height - binStartY + 100; 
-    
-    for (let c = 0; c < PEG_ROWS; c++) {
-        let wallX = cx - halfWidth + c * SPACING_X; 
-        let wallY = binStartY + binHeight / 2;
-        let divider = Bodies.rectangle(wallX, wallY, WALL_THICKNESS / 2, binHeight, {
-            isStatic: true, friction: 0, label: "bound"
+    // Bin dividers
+    const binStartY = bottomPegY + 20;
+    const binHeight = canvas.height - binStartY + 150;
+    for (let c = 0; c <= PEG_ROWS; c++) {
+        const x = cx - halfW + (c - 0.5) * SPACING_X;
+        const divider = Bodies.rectangle(x, binStartY + binHeight/2, WALL_THICKNESS/1.5, binHeight, {
+            isStatic: true, friction: 0.01, restitution: 0.1, label: "divider"
         });
         World.add(engine.world, divider);
     }
 
-    // 6. Floor
-    const ground = Bodies.rectangle(cx, canvas.height + 25, canvas.width, 50, { isStatic: true, label: "bound" });
+    // Floor
+    const ground = Bodies.rectangle(cx, canvas.height + 50, canvas.width, 100, {
+        isStatic: true, restitution: 0.2, label: "floor"
+    });
     World.add(engine.world, ground);
 }
 
-// Instantly preload the entire rectangular hopper uniformly
+// ---------- Prepare ball queue ----------
 function populateHopper() {
-    const sidePadding = BALL_RADIUS * 6 + 14;
-    const leftBound = cx - HOPPER_WIDTH + sidePadding;
-    const rightBound = cx + HOPPER_WIDTH - sidePadding;
-    const spacing = BALL_RADIUS * 2.15;
-    const cols = Math.max(1, Math.floor((rightBound - leftBound) / spacing));
-    const startX = leftBound + BALL_RADIUS;
-    const startY = START_Y - 140;
+    ballQueue = [];
+    activeBalls = 0;
+    releasedCount = 0;
 
-    const hopperTopY = START_Y - 280 + BALL_RADIUS + 2;
-    const maxRows = Math.max(1, Math.floor((startY - hopperTopY) / spacing) + 1);
-    const rows = Math.min(Math.ceil(targetBallCount / cols), maxRows);
-    const ballCount = Math.min(targetBallCount, rows * cols);
+    const usableW = (HOPPER_WIDTH * 2) - 30;
+    const spacing = BALL_RADIUS * 2.2;
+    const cols = Math.floor(usableW / spacing);
+    const startX = cx - (cols * spacing) / 2 + spacing/2;
+    const startY = START_Y - 200;
+    const limit = Math.min(targetBallCount, 500);
 
-    let newBalls = [];
-    for (let i = 0; i < ballCount; i++) {
+    for (let i = 0; i < limit; i++) {
         const row = Math.floor(i / cols);
         const col = i % cols;
-        const xOffset = (Math.random() * 2 - 1) * 1.2;
-        const yOffset = (Math.random() * 1.4) - 0.7;
-
-        const ball = Bodies.circle(startX + col * spacing + xOffset, startY - row * spacing + yOffset, BALL_RADIUS, {
-            restitution: 0.14,
-            friction: 0.03,
-            frictionAir: 0.0018,
-            density: 0.008,
-            label: "ball"
+        const ball = Bodies.circle(startX + col * spacing, startY - row * spacing, BALL_RADIUS, {
+            restitution: 0.38,
+            friction: 0.006,
+            frictionAir: 0.002,
+            density: 0.07,
+            label: "ball",
+            sleepThreshold: 50
         });
-
-        newBalls.push(ball);
+        ball.lastMove = Date.now();
+        ball.lastY = ball.position.y;
+        ballQueue.push(ball);
     }
-    World.add(engine.world, newBalls);
 }
 
+// ---------- FIXED RELEASE GATE SECTION ----------
 function releaseBalls() {
-    if (!isRunning && gate) {
-        isRunning = true;
-        
-        Composite.remove(engine.world, gate);
-        gate = null;
-        
-        actionBtn.innerText = "🔄 SIMULATION RUNNING";
-        actionBtn.classList.add("running");
-        ballSlider.disabled = true;
+    if (isRunning || ballQueue.length === 0) return;
+    isRunning = true;
+
+    const allBodies = Composite.allBodies(engine.world);
+    
+    // Core Fix: Find all elements labeled "gate" and remove using standardized Composite.remove
+    const gateBodies = allBodies.filter(b => b.label === "gate");
+    if (gateBodies.length > 0) {
+        Composite.remove(engine.world, gateBodies);
+        console.log("Gate removed by standard label criteria.");
+    } else {
+        // Fallback Fix: Target static rectangles sitting near the bottleneck height coordinate
+        const positionFallback = allBodies.filter(b => b.isStatic && Math.abs(b.position.y - (START_Y - 35)) < 12);
+        if (positionFallback.length > 0) {
+            Composite.remove(engine.world, positionFallback);
+            console.log("Gate wiped via layout position backup configuration.");
+        }
     }
+
+    actionBtn.classList.add("running");
+    ballSlider.disabled = true;
+
+    if (releaseInterval) clearInterval(releaseInterval);
+    releaseInterval = setInterval(releaseNextBall, RELEASE_DELAY_MS);
+}
+
+function releaseNextBall() {
+    if (!isRunning) return;
+    if (ballQueue.length === 0) {
+        if (releaseInterval) {
+            clearInterval(releaseInterval);
+            releaseInterval = null;
+            actionBtn.innerText = "✅ SIMULATION COMPLETE";
+            actionBtn.classList.remove("running");
+        }
+        return;
+    }
+
+    const ball = ballQueue.shift();
+    World.add(engine.world, ball);
+    activeBalls++;
+    releasedCount++;
+    actionBtn.innerText = `🎯 RELEASING... ${releasedCount}/${targetBallCount}`;
+}
+
+// ---------- Stuck prevention & cleanup ----------
+let unstuckInterval = null;
+let cleanupInterval = null;
+
+function unstuckBalls() {
+    if (!engine || !isRunning) return;
+    const bodies = Composite.allBodies(engine.world);
+    const now = Date.now();
+    for (let b of bodies) {
+        if (b.label !== "ball") continue;
+
+        const speed = Math.abs(b.velocity.x) + Math.abs(b.velocity.y);
+        const nearBottom = b.position.y > canvas.height - 90;
+
+        if (speed > 0.15) {
+            b.lastMove = now;
+            b.lastY = b.position.y;
+        }
+
+        if (!nearBottom && speed < 0.3) {
+            const angle = Math.random() * Math.PI * 2;
+            Body.applyForce(b, b.position, {
+                x: Math.cos(angle) * 0.0006,
+                y: Math.sin(angle) * 0.0006
+            });
+            if (b.isSleeping) Body.setAwake(b, true);
+        }
+
+        if (now - b.lastMove > 5000 && !nearBottom) {
+            World.remove(engine.world, b);
+            activeBalls--;
+        }
+    }
+}
+
+function cleanupSettledBalls() {
+    if (!engine || !isRunning) return;
+    const bodies = Composite.allBodies(engine.world);
+    const toRemove = [];
+    for (let b of bodies) {
+        if (b.label === "ball") {
+            const atBottom = b.position.y > canvas.height - 70;
+            const verySlow = Math.abs(b.velocity.y) < 0.2 && Math.abs(b.velocity.x) < 0.2;
+            if (atBottom && verySlow) toRemove.push(b);
+        }
+    }
+    if (toRemove.length) {
+        World.remove(engine.world, toRemove);
+        activeBalls -= toRemove.length;
+    }
+}
+
+// ---------- Resize & reset ----------
+function resizeViewport() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    cx = canvas.width / 2;
+    cy = canvas.height / 2;
 }
 
 function resetSimulation() {
+    if (releaseInterval) clearInterval(releaseInterval);
+    if (unstuckInterval) clearInterval(unstuckInterval);
+    if (cleanupInterval) clearInterval(cleanupInterval);
+    releaseInterval = null;
     isRunning = false;
-    ballSlider.disabled = false;
+    activeBalls = 0;
+    releasedCount = 0;
+    ballQueue = [];
     actionBtn.innerText = "🚀 RELEASE BALLS";
     actionBtn.classList.remove("running");
-    
-    buildMatrix();
-    populateHopper();
+    ballSlider.disabled = false;
+
+    if (engine) {
+        buildMatrix();
+        populateHopper();
+    }
+
+    unstuckInterval = setInterval(unstuckBalls, 1500);
+    cleanupInterval = setInterval(cleanupSettledBalls, 2000);
 }
 
-// UI Triggers
-actionBtn.addEventListener("click", () => {
-    if (!isRunning) releaseBalls();
-});
-
-resetBtn.addEventListener("click", resetSimulation);
-
-curveBtn.addEventListener("click", () => {
-    showCurveOverlay = !showCurveOverlay;
-    if (showCurveOverlay) {
-        curveBtn.innerText = "Curve Overlay: ON";
-        curveBtn.classList.add("active");
-    } else {
-        curveBtn.innerText = "Curve Overlay: OFF";
-        curveBtn.classList.remove("active");
-    }
-});
-
-window.addEventListener("keydown", (e) => {
-    const key = e.key.toLowerCase();
-    if (key === " ") { e.preventDefault(); actionBtn.click(); }
-    if (key === "c") { e.preventDefault(); curveBtn.click(); }
-    if (key === "r") { e.preventDefault(); resetBtn.click(); }
-});
-
-window.addEventListener("resize", () => {
-    resizeViewport();
-    resetSimulation();
-});
-
-// Render Loop
-function renderLoop() {
+// ---------- Render ----------
+function draw() {
+    if (!engine) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 1. Draw outer neon boundaries
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(leftBoundaryPts[0].x, leftBoundaryPts[0].y);
-    for(let i=1; i<leftBoundaryPts.length; i++) ctx.lineTo(leftBoundaryPts[i].x, leftBoundaryPts[i].y);
-    
-    ctx.moveTo(rightBoundaryPts[0].x, rightBoundaryPts[0].y);
-    for(let i=1; i<rightBoundaryPts.length; i++) ctx.lineTo(rightBoundaryPts[i].x, rightBoundaryPts[i].y);
-    
-    ctx.strokeStyle = "rgba(0, 229, 255, 0.7)";
-    ctx.lineWidth = 2.5;
-    ctx.shadowColor = "rgba(0, 229, 255, 0.5)";
-    ctx.shadowBlur = 8;
-    ctx.stroke();
-    ctx.restore();
+    if (leftBoundaryPts.length) {
+        ctx.beginPath();
+        ctx.moveTo(leftBoundaryPts[0].x, leftBoundaryPts[0].y);
+        for (let i = 1; i < leftBoundaryPts.length; i++) ctx.lineTo(leftBoundaryPts[i].x, leftBoundaryPts[i].y);
+        ctx.moveTo(rightBoundaryPts[0].x, rightBoundaryPts[0].y);
+        for (let i = 1; i < rightBoundaryPts.length; i++) ctx.lineTo(rightBoundaryPts[i].x, rightBoundaryPts[i].y);
+        ctx.strokeStyle = "#00e5ff88";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
 
     const bodies = Composite.allBodies(engine.world);
 
-    ctx.save();
-    ctx.strokeStyle = "rgba(0, 229, 255, 0.9)";
-    ctx.lineWidth = 3;
-    ctx.shadowColor = "rgba(0, 229, 255, 0.35)";
-    ctx.shadowBlur = 8;
-    for (let i = 0; i < bodies.length; i++) {
-        const b = bodies[i];
-        if (b.isStatic && b.label === "bound" && b.vertices.length > 0) {
+    // Dividers
+    ctx.fillStyle = "rgba(0, 229, 255, 0.08)";
+    ctx.strokeStyle = "#00e5ff44";
+    ctx.lineWidth = 1;
+    for (let b of bodies) {
+        if (b.label === "divider" && b.vertices) {
             ctx.beginPath();
             ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
-            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+            for (let i = 1; i < b.vertices.length; i++) ctx.lineTo(b.vertices[i].x, b.vertices[i].y);
             ctx.closePath();
+            ctx.fill();
             ctx.stroke();
         }
     }
-    ctx.restore();
 
-    ctx.save();
-    for (let i = 0; i < bodies.length; i++) {
-        const b = bodies[i];
-        
+    // Pegs
+    ctx.fillStyle = "#ffffff";
+    ctx.shadowBlur = 0;
+    for (let b of bodies) {
         if (b.label === "peg") {
             ctx.beginPath();
-            ctx.arc(b.position.x, b.position.y, PEG_RADIUS, 0, Math.PI * 2);
-            ctx.fillStyle = "#ffffff";
+            ctx.arc(b.position.x, b.position.y, PEG_RADIUS, 0, Math.PI*2);
             ctx.fill();
-        } else if (b.label === "ball") {
-            ctx.beginPath();
-            ctx.arc(b.position.x, b.position.y, BALL_RADIUS, 0, Math.PI * 2);
-            ctx.fillStyle = "#00e5ff";
-            ctx.fill();
-        } else if (b.label === "gate") {
+        }
+    }
+
+    // Gate (only if still present)
+    for (let b of bodies) {
+        if (b.label === "gate" && b.vertices) {
             ctx.beginPath();
             ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
-            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+            for (let i = 1; i < b.vertices.length; i++) ctx.lineTo(b.vertices[i].x, b.vertices[i].y);
             ctx.closePath();
             ctx.fillStyle = "#ff3366";
-            ctx.shadowColor = "#ff3366";
-            ctx.shadowBlur = 10;
             ctx.fill();
         }
     }
-    ctx.restore();
 
-    // Draw static boundary bodies clearly so the funnel and hopper are visible.
-    ctx.save();
-    ctx.strokeStyle = "rgba(0, 229, 255, 0.55)";
-    ctx.lineWidth = 2.5;
-    ctx.shadowColor = "rgba(0, 229, 255, 0.35)";
-    ctx.shadowBlur = 8;
-    for (let i = 0; i < bodies.length; i++) {
-        const b = bodies[i];
-        if (b.isStatic && b.label === "bound" && b.vertices.length > 0) {
+    // Balls
+    ctx.shadowColor = "#00e5ff";
+    ctx.shadowBlur = 6;
+    for (let b of bodies) {
+        if (b.label === "ball") {
             ctx.beginPath();
-            ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
-            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
-            ctx.closePath();
-            ctx.stroke();
+            ctx.arc(b.position.x, b.position.y, BALL_RADIUS, 0, Math.PI*2);
+            ctx.fillStyle = "#00e5ff";
+            ctx.fill();
         }
     }
-    ctx.restore();
+    ctx.shadowBlur = 0;
 
-    const bottomRowWidth = (PEG_ROWS - 1) * SPACING_X;
-    const halfWidth = bottomRowWidth / 2;
-    const binOuterEdge = halfWidth + SPACING_X;
-    const binStartY = START_Y + (PEG_ROWS - 1) * SPACING_Y + 15;
-    const bins = new Array(PEG_ROWS + 1).fill(0);
-
-    for (let i = 0; i < bodies.length; i++) {
-        const b = bodies[i];
-        if (b.label === "ball" && b.position.y > binStartY) {
-            const idx = Math.floor((b.position.x - (cx - binOuterEdge)) / SPACING_X);
-            if (idx >= 0 && idx < bins.length) bins[idx]++;
-        }
-    }
-
-    const maxBin = Math.max(...bins, 1);
-    ctx.save();
-    ctx.fillStyle = "rgba(255, 51, 102, 0.16)";
-    for (let i = 0; i < bins.length; i++) {
-        const x = cx - binOuterEdge + i * SPACING_X;
-        const barHeight = (bins[i] / maxBin) * 90;
-        ctx.fillRect(x + 1, canvas.height - barHeight - 2, SPACING_X - 2, barHeight);
-    }
-    ctx.restore();
-
-    if (showCurveOverlay) {
+    // Bell curve
+    if (showCurve) {
         ctx.save();
         ctx.strokeStyle = "#ff3366";
-        ctx.lineWidth = 3.5;
-        ctx.shadowColor = "rgba(255, 51, 102, 0.8)";
-        ctx.shadowBlur = 10;
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 0;
         ctx.beginPath();
 
-        const baseLine = canvas.height - 2;
+        const bottomY = canvas.height - 55;
         const n = PEG_ROWS;
-        const sigma = (Math.sqrt(n) / 2) * SPACING_X;
-        const centerProb = SPACING_X / (sigma * Math.sqrt(2 * Math.PI));
-        const expectedMaxBallsInCenter = targetBallCount * centerProb;
-        const ballVisualStackingHeight = BALL_RADIUS * 1.95;
-        const curveAmplitude = expectedMaxBallsInCenter * ballVisualStackingHeight;
+        const maxW = (n - 1) * SPACING_X;
+        const startX = cx - maxW / 2;
 
-        let started = false;
-        for (let x = cx - 450; x <= cx + 450; x += 5) {
-            const exponent = -Math.pow(x - cx, 2) / (2 * Math.pow(sigma, 2));
-            const y = baseLine - (curveAmplitude * Math.exp(exponent));
-
-            if (!started) {
-                ctx.moveTo(x, y);
-                started = true;
-            } else {
-                ctx.lineTo(x, y);
-            }
+        let row = [1];
+        for (let i = 1; i <= n; i++) {
+            row[i] = 0;
+            for (let j = i; j > 0; j--) row[j] = (row[j] || 0) + (row[j-1] || 0);
+        }
+        const total = Math.pow(2, n);
+        let first = true;
+        for (let k = 0; k <= n; k++) {
+            const prob = (row[k] || 0) / total;
+            const height = prob * targetBallCount * (BALL_RADIUS * 1.6);
+            const x = startX + k * SPACING_X;
+            const y = bottomY - Math.min(height, 240);
+            if (first) { ctx.moveTo(x, y); first = false; }
+            else ctx.lineTo(x, y);
         }
         ctx.stroke();
         ctx.restore();
     }
-
-    requestAnimationFrame(renderLoop);
 }
 
-// Initializer
-(function init() {
-    engine = Engine.create({ 
-        gravity: { y: 1.0 }, 
-        positionIterations: 12, 
-        velocityIterations: 12  
-    }); 
-    
+let lastFrame = 0;
+function animate(now) {
+    requestAnimationFrame(animate);
+    if (now - lastFrame < 16) return;
+    lastFrame = now;
+    draw();
+}
+
+function init() {
+    engine = Engine.create({
+        gravity: { x: 0, y: 0.8 },
+        positionIterations: 12,
+        velocityIterations: 8,
+        enableSleeping: true
+    });
     resizeViewport();
     buildMatrix();
     populateHopper();
-
     runner = Runner.create();
     Runner.run(runner, engine);
-    
-    requestAnimationFrame(renderLoop);
-})();
+
+    unstuckInterval = setInterval(unstuckBalls, 1500);
+    cleanupInterval = setInterval(cleanupSettledBalls, 2000);
+    requestAnimationFrame(animate);
+}
+
+init();
