@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="only dark">
-  <title>Distribution Visualizations: Galton Board Sandbox</title>
+  <title>Distribution Visualizations</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
 </head>
+
 <body>
   <div id="ui-layer">
     <div class="panel-header" id="panelHeader">
@@ -15,134 +18,54 @@
     </div>
 
     <div class="tab-header">
-      <div class="tab-btn active" id="tabControlsBtn">CONTROLS</div>
-      <div class="tab-btn" id="tabParamsBtn">PROBABILITY SETTINGS</div>
-      <div class="tab-btn" id="tabEnvBtn">ENVIRONMENT</div>
+      <div class="tab-btn active" id="tabLiveBtn">CONTROLS</div>
       <div class="tab-btn" id="tabGuideBtn">GUIDE</div>
     </div>
 
     <div class="panel-body">
-      <button id="actionBtn" class="mode-btn">🚀 ACTIVATE SPAWNER</button>
+      <button id="actionBtn" class="mode-btn">🚀 RELEASE BALLS</button>
+      <button id="resetBtn" class="mode-btn" style="background-color: #222; color: #ff9900; border: 1px solid #ff9900;">♻️ RESET MATRIX</button>
 
       <div id="pageControls">
-        <p>Manage real-time execution modifiers for the ball drop sequence.</p>
-        <button id="clearBtn" class="mode-btn reset-btn-theme">🧹 CLEAR HISTOGRAM</button>
-        <button id="overlayBtn" class="mode-btn active">Theoretical Curve: ON</button>
-        
-        <div class="control-group">
-          <label>SPAWN MODE</label>
-          <div class="preset-grid" style="margin-top: 5px;">
-            <button class="mode-btn active spawn-mode-btn" data-mode="continuous">Stream</button>
-            <button class="mode-btn spawn-mode-btn" data-mode="burst">Burst (50)</button>
-          </div>
-        </div>
-      </div>
+        <p>Toggle advanced runtime modifiers for the simulation below.</p>
 
-      <div id="pageParams" style="display: none;">
-        <p>Configure structural pins and binomial generation weights.</p>
-        
-        <div class="control-group">
-          <label>PEG ROWS (TRIANGLE DEPTH)</label>
-          <div class="ratio-display" id="rowsTxt" style="color: #00e5ff;">8 ROWS</div>
-          <div class="slider-row">
-            <span>Rows</span>
-            <div class="slider-container">
-              <input type="range" id="rowsSlider" min="4" max="16" step="1" value="8">
-              <div class="slider-ticks" data-ticks="13"></div>
-            </div>
-          </div>
-        </div>
+        <button id="curveBtn" class="mode-btn">Curve Overlay: OFF</button>
 
-        <div class="control-group">
-          <label>SUCCESS PROBABILITY (p)</label>
-          <div class="ratio-display" id="probTxt" style="color: #ff9900;">0.50 (Symmetric)</div>
-          <div class="slider-row">
-            <span>Bias</span>
+        <div class="control-group" style="border-bottom: none; margin-top: 8px;">
+          <label>TOTAL BALL QUANTITY</label>
+          <div class="ratio-display" id="ballCountTxt">300 BALLS</div>
+          <div class="slider-row" style="margin-top: 5px;">
+            <span style="width: auto; margin-right: 5px;">Amount</span>
             <div class="slider-container">
-              <input type="range" id="probSlider" min="0.1" max="0.9" step="0.01" value="0.5" style="accent-color: #ff9900;">
+              <input type="range" id="ballSlider" min="100" max="1000" step="10" value="300" style="accent-color: #00e5ff;">
             </div>
           </div>
-        </div>
-        
-        <div class="control-group">
-          <label>BALL RADIUS</label>
-          <div class="ratio-display" id="radiusTxt">6px</div>
-          <div class="slider-row">
-            <span>Size</span>
-            <div class="slider-container">
-              <input type="range" id="radiusSlider" min="4" max="10" step="1" value="6">
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="pageEnv" style="display: none;">
-        <p>Modify local physical parameters governing kinematic collisions.</p>
-        <div class="control-group">
-          <label>GRAVITATIONAL FORCE</label>
-          <div class="ratio-display" id="gravityTxt">9.81 m/s²</div>
-          <div class="slider-row">
-            <span>Gravity</span>
-            <div class="slider-container">
-              <input type="range" id="gravitySlider" min="3.0" max="25.0" step="0.1" value="9.81">
-            </div>
-          </div>
-        </div>
-
-        <div class="control-group">
-          <label>ELASTIC COEFFICIENT (RESTITUTION)</label>
-          <div class="ratio-display" id="elasticityTxt">0.45</div>
-          <div class="slider-row">
-            <span>Bounce</span>
-            <div class="slider-container">
-              <input type="range" id="elasticitySlider" min="0.1" max="0.8" step="0.05" value="0.45">
-            </div>
-          </div>
+          <p style="margin-bottom: 0; font-size: 10px; color: #7a7a7a;">Adjust the sample size. Higher numbers create a smoother approximation of the binomial distribution.</p>
         </div>
       </div>
 
       <div id="pageGuide" style="display: none;">
         <div class="control-group">
-          <label>KEYBOARD CONTROLS</label>
-          <div class="guide-row"><span class="guide-key">Space</span><span>Toggle Drop Spawner</span></div>
-          <div class="guide-row"><span class="guide-key">C</span><span>Clear current matrix data</span></div>
-          <div class="guide-row"><span class="guide-key">H</span><span>Toggle Theoretical Curve</span></div>
+          <label>KEYBOARD SHORTCUTS</label>
+          <div class="guide-row"><span class="guide-key">Space</span><span>Release / pause ball drop</span></div>
+          <div class="guide-row"><span class="guide-key">C</span><span>Toggle red curve overlay</span></div>
+          <div class="guide-row"><span class="guide-key">R</span><span>Reset the entire matrix</span></div>
         </div>
+
         <div class="control-group" style="border-bottom: none;">
           <label>THEORY SUMMARY</label>
-          <p style="font-size:11px; margin-bottom:0;">
-            Each pin hit functions as an independent Bernoulli trial. Total rightward bounces follow the Binomial distribution:
-            <br><br><span style="color:#00e5ff; font-family:monospace;">P(K = k) = nCr(n,k) * pᵏ * (1-p)ⁿ⁻ᵏ</span>
+          <p style="font-size: 11px; margin-bottom: 0;">
+            As each ball hits a pin, it randomly bounces left or right. The accumulation of these binary choices over multiple layers simulates a random walk, resulting in a bell-shaped standard binomial distribution.
           </p>
         </div>
       </div>
-    </div>
-  </div>
 
-  <div id="telemetry-control">
-    <div id="telemetry-dropdown">
-      <div class="telem-label">LIVE DATA SUMMARY</div>
-      <div class="telem-row">
-        <div class="telem-pip on"></div>
-        <span id="telemCount">Total Balls: 0</span>
-      </div>
-      <div class="telem-row">
-        <div class="telem-pip on" style="background:#ff9900; border-color:#ff9900; box-shadow:0 0 4px #ff9900;"></div>
-        <span id="telemMean">Mean (μ): 0.00</span>
-      </div>
-      <div class="telem-row">
-        <div class="telem-pip on" style="background:#ff00ff; border-color:#ff00ff; box-shadow:0 0 4px #ff00ff;"></div>
-        <span id="telemVariance">Var (σ²): 0.00</span>
-      </div>
-      <div class="telem-row">
-        <div class="telem-pip on" style="background:#00ff7f; border-color:#00ff7f; box-shadow:0 0 4px #00ff7f;"></div>
-        <span id="telemFps">FPS: --</span>
-      </div>
     </div>
-    <button id="telemetryBtn">STATISTICS ▲</button>
   </div>
 
   <canvas id="canvas"></canvas>
+
   <script src="script.js"></script>
 </body>
+
 </html>

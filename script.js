@@ -1,465 +1,385 @@
+const { Engine, World, Bodies, Composite, Runner } = Matter;
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-// System Parameters
-let isSpawning = false;
-let spawnMode = "continuous"; // continuous or burst
-let showOverlay = true;
-let totalRows = 8;
-let successProb = 0.5;
-let ballRadius = 6;
-let gravity = 9.81;
-let restitution = 0.45;
-
-let balls = [];
-let pegs = [];
-let binCounts = [];
-let totalDropped = 0;
-
-// Layout Geometry Variables
-let boardWidth, boardHeight, startX, startY;
-let spacingX = 36;
-let spacingY = 32;
-let pegRadius = 4;
-let binY;
-
-// Color Loop Indexing
-const themeColors = ["#00e5ff", "#ff9900", "#ff00ff", "#00ff7f", "#ffff00"];
-
-// Performance Metrics
-let fps = 0, lastFrameTime = performance.now(), frameCount = 0;
-
-// DOM Linkage
+const ballSlider = document.getElementById("ballSlider");
+const ballCountTxt = document.getElementById("ballCountTxt");
 const actionBtn = document.getElementById("actionBtn");
-const clearBtn = document.getElementById("clearBtn");
-const overlayBtn = document.getElementById("overlayBtn");
-const rowsSlider = document.getElementById("rowsSlider");
-const rowsTxt = document.getElementById("rowsTxt");
-const probSlider = document.getElementById("probSlider");
-const probTxt = document.getElementById("probTxt");
-const radiusSlider = document.getElementById("radiusSlider");
-const radiusTxt = document.getElementById("radiusTxt");
-const gravitySlider = document.getElementById("gravitySlider");
-const gravityTxt = document.getElementById("gravityTxt");
-const elasticitySlider = document.getElementById("elasticitySlider");
-const elasticityTxt = document.getElementById("elasticityTxt");
+const resetBtn = document.getElementById("resetBtn");
+const curveBtn = document.getElementById("curveBtn");
 
-const telemCount = document.getElementById("telemCount");
-const telemMean = document.getElementById("telemMean");
-const telemVariance = document.getElementById("telemVariance");
-const telemFps = document.getElementById("telemFps");
-const telemetryBtn = document.getElementById("telemetryBtn");
-const telemetryDropdown = document.getElementById("telemetry-dropdown");
+// UI Mapping
+const tabLiveBtn = document.getElementById("tabLiveBtn");
+const tabGuideBtn = document.getElementById("tabGuideBtn");
+const pageControls = document.getElementById("pageControls");
+const pageGuide = document.getElementById("pageGuide");
+const panelHeader = document.getElementById("panelHeader");
+const uiLayer = document.getElementById("ui-layer");
 
-// Initialize Setup Layouts
-function initSimulationMatrix() {
-  pegs = [];
-  binCounts = new Array(totalRows + 1).fill(0);
-  
-  // Re-calculate dimensions contextually based on viewport scaling
-  spacingX = Math.min(42, Math.max(24, canvas.width / (totalRows + 4)));
-  spacingY = spacingX * 0.85;
-  
-  startX = canvas.width / 2;
-  startY = Math.min(120, canvas.height * 0.15);
-  
-  // Adjust asymmetric peg shifts using 'p' modifier mapping
-  // Simulates systematic trajectory lean
-  const pShift = (successProb - 0.5) * spacingX * 0.4;
+let engine, runner;
+let cx, cy;
 
-  // Build Triangle Grid Arrangement
-  for (let r = 0; r < totalRows; r++) {
-    const pegsInRow = r + 1;
-    const rowWidth = (pegsInRow - 1) * spacingX;
-    const rowLeft = startX - rowWidth / 2;
-    
-    for (let i = 0; i < pegsInRow; i++) {
-      pegs.push({
-        x: rowLeft + i * spacingX + (r * pShift),
-        y: startY + r * spacingY,
-        flash: 0
-      });
-    }
-  }
-  
-  // Define Channel Ingestion Line Boundary
-  binY = startY + totalRows * spacingY + 20;
-}
+// ==========================================
+// SCALED BINOMIAL CONFIGURATION
+// ==========================================
+const PEG_ROWS = 15;        
+const PEG_RADIUS = 2.5;     
+const BALL_RADIUS = 3.5;    
+const SPACING_X = 20;       
+const SPACING_Y = 20;       
+const START_Y = 300;        
+const WALL_THICKNESS = 8;
+const HOPPER_WIDTH = 160;   
+
+let targetBallCount = parseInt(ballSlider.value);
+let isRunning = false;
+let showCurveOverlay = false;
+let gate = null; 
+
+// Geometric Arrays
+let leftBoundaryPts = [];
+let rightBoundaryPts = [];
+
+// UI Logic
+panelHeader.addEventListener("click", () => uiLayer.classList.toggle("collapsed"));
+
+tabLiveBtn.addEventListener("click", () => {
+    tabLiveBtn.classList.add("active");
+    tabGuideBtn.classList.remove("active");
+    pageControls.style.display = "block";
+    pageGuide.style.display = "none";
+});
+
+tabGuideBtn.addEventListener("click", () => {
+    tabGuideBtn.classList.add("active");
+    tabLiveBtn.classList.remove("active");
+    pageControls.style.display = "none";
+    pageGuide.style.display = "block";
+});
+
+// Update Text instantly while dragging
+ballSlider.addEventListener("input", (e) => {
+    ballCountTxt.textContent = `${e.target.value} BALLS`;
+});
+
+// Re-render the balls ONLY when the user finishes dragging the slider
+ballSlider.addEventListener("change", (e) => {
+    targetBallCount = parseInt(e.target.value);
+    resetSimulation();
+});
 
 function resizeViewport() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  initSimulationMatrix();
-}
-
-window.addEventListener("resize", resizeViewport);
-window.onload = () => {
-  resizeViewport();
-  buildSliderTicks();
-  animatePipeline();
-};
-
-// Tick Builder Helper
-function buildSliderTicks() {
-  document.querySelectorAll(".slider-ticks").forEach((container) => {
-    container.innerHTML = "";
-    const ticks = parseInt(container.getAttribute("data-ticks")) || 0;
-    for (let i = 0; i < ticks; i++) {
-      const dot = document.createElement("div");
-      dot.className = "tick-dot";
-      container.appendChild(dot);
-    }
-  });
-}
-
-// Generate Drop Unit
-function spawnBall() {
-  // Give subtle entry displacement to ensure distribution spread
-  const entryOffset = (Math.random() - 0.5) * 6;
-  const randomColor = themeColors[Math.floor(Math.random() * themeColors.length)];
-  
-  balls.push({
-    x: startX + entryOffset,
-    y: startY - 40,
-    vx: (Math.random() - 0.5) * 1.5,
-    vy: 0,
-    radius: ballRadius,
-    color: randomColor,
-    settled: false
-  });
-  totalDropped++;
-}
-
-// Factorial Utilities for Overlay Math Models
-function nCr(n, r) {
-  if (r < 0 || r > n) return 0;
-  let res = 1;
-  for (let i = 1; i <= r; i++) {
-    res = res * (n - i + 1) / i;
-  }
-  return res;
-}
-
-// Process Frame Iterations
-let spawnCooldown = 0;
-function animatePipeline() {
-  const now = performance.now();
-  frameCount++;
-  if (now > lastFrameTime + 1000) {
-    fps = Math.round((frameCount * 1000) / (now - lastFrameTime));
-    telemFps.innerText = `FPS: ${fps}`;
-    frameCount = 0;
-    lastFrameTime = now;
-  }
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  // Handle Constant Spawning Intervals
-  if (isSpawning && spawnMode === "continuous") {
-    spawnCooldown++;
-    if (spawnCooldown >= 4) { // Fast pacing flow rate
-      spawnBall();
-      spawnCooldown = 0;
-    }
-  }
-
-  // Update & Draw Pins Array
-  pegs.forEach(peg => {
-    if (peg.flash > 0) peg.flash -= 0.05;
-    ctx.beginPath();
-    ctx.arc(peg.x, peg.y, pegRadius, 0, Math.PI * 2);
-    ctx.fillStyle = peg.flash > 0 ? `rgba(0, 225, 255, ${0.3 + peg.flash * 0.7})` : "#555";
-    ctx.shadowBlur = peg.flash > 0 ? peg.flash * 8 : 0;
-    ctx.shadowColor = "#00e5ff";
-    ctx.fill();
-    ctx.shadowBlur = 0; // standard clear
-  });
-
-  // Render Slots Dividers
-  const lastRowPegs = totalRows;
-  const bottomWidth = (lastRowPegs) * spacingX;
-  const leftEdge = startX - bottomWidth / 2;
-  const pShift = (successProb - 0.5) * spacingX * 0.4;
-  const finalShift = totalRows * pShift;
-
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
-  ctx.lineWidth = 2;
-  
-  for (let i = 0; i <= totalRows + 1; i++) {
-    const posX = leftEdge + (i - 0.5) * spacingX + finalShift;
-    ctx.beginPath();
-    ctx.moveTo(posX, binY);
-    ctx.lineTo(posX, canvas.height);
-    ctx.stroke();
-  }
-
-  // Render Binned Accumulated Counts Visually
-  const binMaxCount = Math.max(...binCounts, 1);
-  const maxBarHeight = Math.max(80, canvas.height - binY - 60);
-
-  for (let i = 0; i <= totalRows; i++) {
-    const posX = leftEdge + i * spacingX + finalShift;
-    const barH = (binCounts[i] / binMaxCount) * maxBarHeight;
+    const viewportHeight = window.visualViewport?.height || window.innerHeight;
+    const viewportWidth = window.visualViewport?.width || window.innerWidth;
     
-    if (barH > 0) {
-      ctx.fillStyle = "rgba(0, 229, 255, 0.15)";
-      ctx.strokeStyle = "#00e5ff";
-      ctx.lineWidth = 1.5;
-      
-      ctx.fillRect(posX - spacingX/2 + 2, canvas.height - barH, spacingX - 4, barH);
-      ctx.strokeRect(posX - spacingX/2 + 2, canvas.height - barH, spacingX - 4, barH);
-      
-      // Inline string value markers
-      ctx.fillStyle = "#aaa";
-      ctx.font = "10px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(binCounts[i], posX, canvas.height - barH - 8);
-    }
-  }
+    document.documentElement.style.setProperty("--app-height", `${viewportHeight}px`);
+    canvas.width = viewportWidth;
+    canvas.height = viewportHeight;
+    cx = canvas.width / 2;
+    cy = canvas.height / 2;
+}
 
-  // Theoretical Distribution Line Overlay Mapping
-  if (showOverlay) {
-    ctx.beginPath();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = "#ff9900";
+// Helper: Line segments for continuous casing
+function createWallBetweenPoints(p1, p2, labelStr = "bound") {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+    const midX = p1.x + dx / 2;
+    const midY = p1.y + dy / 2;
     
-    for (let i = 0; i <= totalRows; i++) {
-      const posX = leftEdge + i * spacingX + finalShift;
-      const prob = nCr(totalRows, i) * Math.pow(successProb, i) * Math.pow(1 - successProb, totalRows - i);
-      
-      // Dynamic theoretical scale vs real tracking counts
-      const theoreticalY = canvas.height - (prob * (totalDropped > 0 ? totalDropped : 100) / binMaxCount) * maxBarHeight;
-      const baselineY = canvas.height - prob * maxBarHeight * 3.5; // fallback absolute shape projection
-      
-      // Target localized adaptive scale mapping alignment
-      const actualTargetY = totalDropped > 50 ? theoreticalY : baselineY;
+    return Bodies.rectangle(midX, midY, length + 4, WALL_THICKNESS, {
+        isStatic: true,
+        angle: angle,
+        friction: 0.12,
+        restitution: 0.08,
+        label: labelStr
+    });
+}
 
-      if (i === 0) ctx.moveTo(posX, actualTargetY);
-      else ctx.lineTo(posX, actualTargetY);
-    }
-    ctx.stroke();
-    
-    // Connect anchor nodes to graph layout joints
-    for (let i = 0; i <= totalRows; i++) {
-      const posX = leftEdge + i * spacingX + finalShift;
-      const prob = nCr(totalRows, i) * Math.pow(successProb, i) * Math.pow(1 - successProb, totalRows - i);
-      const actualTargetY = totalDropped > 50 ? 
-        canvas.height - (prob * totalDropped / binMaxCount) * maxBarHeight : 
-        canvas.height - prob * maxBarHeight * 3.5;
+function buildMatrix() {
+    if (engine) World.clear(engine.world);
 
-      ctx.beginPath();
-      ctx.arc(posX, actualTargetY, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = "#fff";
-      ctx.fill();
-    }
-  }
+    // 1. Triangular Peg Matrix
+    for (let r = 0; r < PEG_ROWS; r++) {
+        let pegsInRow = r + 1; 
+        let rowWidth = (pegsInRow - 1) * SPACING_X;
+        let startX = cx - rowWidth / 2;
 
-  // Physics Update Execution (Kinematic Vector Resolves)
-  const dt = 0.15; // Normalized structural execution delta step
-  const activeGravity = gravity * 0.4;
-
-  for (let b = balls.length - 1; b >= 0; b--) {
-    let ball = balls[b];
-
-    if (!ball.settled) {
-      ball.vy += activeGravity * dt;
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
-
-      // Peg Multi-Collision Matrix Scanning
-      pegs.forEach(peg => {
-        let dx = ball.x - peg.x;
-        let dy = ball.y - peg.y;
-        let dist = Math.hypot(dx, dy);
-        let minDist = ball.radius + pegRadius;
-
-        if (dist < minDist) {
-          // Push out vector separation immediately to stop coordinate sticking
-          let nx = dx / dist;
-          let ny = dy / dist;
-          ball.x = peg.x + nx * minDist;
-          ball.y = peg.y + ny * minDist;
-
-          // Reflect velocity matrix relative to hit normal vector
-          let dotProduct = ball.vx * nx + ball.vy * ny;
-          ball.vx = (ball.vx - 2 * dotProduct * nx) * restitution;
-          ball.vy = (ball.vy - 2 * dotProduct * ny) * restitution;
-
-          // Introduce minor probability chaos scatter deviation
-          ball.vx += (Math.random() - 0.5) * 0.6;
-          peg.flash = 1.0;
+        for (let c = 0; c < pegsInRow; c++) {
+            let px = startX + c * SPACING_X;
+            let py = START_Y + r * SPACING_Y;
+            let peg = Bodies.circle(px, py, PEG_RADIUS, {
+                isStatic: true, restitution: 0.18, friction: 0.06, label: "peg"
+            });
+            World.add(engine.world, peg);
         }
-      });
-
-      // Side Wall Enclosure Bounds Repulsion
-      if (ball.x - ball.radius < 0) {
-        ball.x = ball.radius;
-        ball.vx *= -restitution;
-      } else if (ball.x + ball.radius > canvas.width) {
-        ball.x = canvas.width - ball.radius;
-        ball.vx *= -restitution;
-      }
-
-      // Ingestion detection within structural collector channels
-      if (ball.y >= binY) {
-        let normalizedX = ball.x - (leftEdge - spacingX / 2) - finalShift;
-        let binIndex = Math.floor(normalizedX / spacingX);
-        
-        // Edge containment correction bounds
-        if (binIndex < 0) binIndex = 0;
-        if (binIndex > totalRows) binIndex = totalRows;
-
-        binCounts[binIndex]++;
-        ball.settled = true;
-        
-        // Performance management check: clip rendering element count optimization
-        balls.splice(b, 1);
-        updateTelemetryDisplays();
-        continue;
-      }
     }
 
-    // Dynamic Tracking Active Balls Render Path
-    ctx.beginPath();
-    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
-    ctx.fillStyle = ball.color;
-    ctx.fill();
-  }
+    const bottomRowWidth = (PEG_ROWS - 1) * SPACING_X;
+    const halfWidth = bottomRowWidth / 2;
+    const binOuterEdge = halfWidth + SPACING_X;
+    const bottomPegY = START_Y + (PEG_ROWS - 1) * SPACING_Y;
 
-  requestAnimationFrame(animatePipeline);
+    const neckHalfWidth = BALL_RADIUS * 5.2;
+    const topWallY = START_Y - 280;
+    const funnelMidY = START_Y - 90;
+    const funnelMidX = cx - neckHalfWidth * 2.35;
+    const funnelShoulderY = START_Y - 40;
+    const funnelShoulderX = cx - neckHalfWidth * 1.5;
+
+    leftBoundaryPts = [
+        { x: cx - HOPPER_WIDTH, y: topWallY },
+        { x: cx - HOPPER_WIDTH, y: START_Y - 140 },
+        { x: funnelMidX, y: funnelMidY },
+        { x: funnelShoulderX, y: funnelShoulderY },
+        { x: cx - neckHalfWidth, y: START_Y - 18 },
+        { x: cx - binOuterEdge, y: bottomPegY },
+        { x: cx - binOuterEdge, y: canvas.height + 50 }
+    ];
+
+    rightBoundaryPts = leftBoundaryPts.map(pt => ({
+        x: cx + (cx - pt.x),
+        y: pt.y
+    }));
+
+    for (let i = 0; i < leftBoundaryPts.length - 1; i++) {
+        World.add(engine.world, createWallBetweenPoints(leftBoundaryPts[i], leftBoundaryPts[i+1]));
+        World.add(engine.world, createWallBetweenPoints(rightBoundaryPts[i], rightBoundaryPts[i+1]));
+    }
+
+    const topWall = Bodies.rectangle(cx, topWallY - WALL_THICKNESS / 2, HOPPER_WIDTH * 2 + 40, WALL_THICKNESS, {
+        isStatic: true,
+        friction: 0.12,
+        restitution: 0.08,
+        label: "bound"
+    });
+    World.add(engine.world, topWall);
+
+    gate = Bodies.rectangle(cx, START_Y - 48, neckHalfWidth * 2 + 22, WALL_THICKNESS, {
+        isStatic: true,
+        friction: 0.08,
+        restitution: 0.06,
+        label: "gate"
+    });
+    World.add(engine.world, gate);
+
+    // 5. Vertical Bin Dividers
+    const binStartY = bottomPegY + 15;
+    const binHeight = canvas.height - binStartY + 100; 
+    
+    for (let c = 0; c < PEG_ROWS; c++) {
+        let wallX = cx - halfWidth + c * SPACING_X; 
+        let wallY = binStartY + binHeight / 2;
+        let divider = Bodies.rectangle(wallX, wallY, WALL_THICKNESS / 2, binHeight, {
+            isStatic: true, friction: 0, label: "bound"
+        });
+        World.add(engine.world, divider);
+    }
+
+    // 6. Floor
+    const ground = Bodies.rectangle(cx, canvas.height + 25, canvas.width, 50, { isStatic: true, label: "bound" });
+    World.add(engine.world, ground);
 }
 
-// Telemetry Metric Calculations
-function updateTelemetryDisplays() {
-  telemCount.innerText = `Total Balls: ${totalDropped}`;
-  
-  // Mathematical distribution metrics
-  const mu = totalRows * successProb;
-  const variance = totalRows * successProb * (1 - successProb);
-  
-  telemMean.innerText = `Mean (μ): ${mu.toFixed(2)}`;
-  telemVariance.innerText = `Var (σ²): ${variance.toFixed(2)}`;
+// Instantly preload the entire rectangular hopper uniformly
+function populateHopper() {
+    const usableWidth = (HOPPER_WIDTH * 2) - BALL_RADIUS * 2 - 16;
+    const spacing = BALL_RADIUS * 2.15;
+    const cols = Math.max(1, Math.floor(usableWidth / spacing));
+    const startX = cx - usableWidth / 2 + BALL_RADIUS + 6;
+    const startY = START_Y - 110;
+
+    const hopperTopY = START_Y - 280 + BALL_RADIUS + 2;
+    const maxRows = Math.max(1, Math.floor((startY - hopperTopY) / spacing) + 1);
+    const rows = Math.min(Math.ceil(targetBallCount / cols), maxRows);
+    const ballCount = Math.min(targetBallCount, rows * cols);
+
+    let newBalls = [];
+    for (let i = 0; i < ballCount; i++) {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const xOffset = (Math.random() * 2 - 1) * 1.2;
+        const yOffset = (Math.random() * 1.4) - 0.7;
+
+        const ball = Bodies.circle(startX + col * spacing + xOffset, startY - row * spacing + yOffset, BALL_RADIUS, {
+            restitution: 0.14,
+            friction: 0.03,
+            frictionAir: 0.0018,
+            density: 0.008,
+            label: "ball"
+        });
+
+        newBalls.push(ball);
+    }
+    World.add(engine.world, newBalls);
 }
 
-// User Event Interactivity Layout Mapping
-function toggleSpawnerState() {
-  isSpawning = !isSpawning;
-  actionBtn.innerText = isSpawning ? "⏸ PAUSE SPAWNER" : "🚀 ACTIVATE SPAWNER";
-  actionBtn.classList.toggle("running", isSpawning);
+function releaseBalls() {
+    if (!isRunning && gate) {
+        isRunning = true;
+        
+        Composite.remove(engine.world, gate);
+        gate = null;
+        
+        actionBtn.innerText = "🔄 SIMULATION RUNNING";
+        actionBtn.classList.add("running");
+        ballSlider.disabled = true;
+    }
 }
 
+function resetSimulation() {
+    isRunning = false;
+    ballSlider.disabled = false;
+    actionBtn.innerText = "🚀 RELEASE BALLS";
+    actionBtn.classList.remove("running");
+    
+    buildMatrix();
+    populateHopper();
+}
+
+// UI Triggers
 actionBtn.addEventListener("click", () => {
-  if (spawnMode === "burst" && !isSpawning) {
-    // Generate immediate structured data cluster burst arrays
-    for (let i = 0; i < 50; i++) setTimeout(spawnBall, i * 45);
-  } else {
-    toggleSpawnerState();
-  }
+    if (!isRunning) releaseBalls();
 });
 
-clearBtn.addEventListener("click", () => {
-  balls = [];
-  totalDropped = 0;
-  binCounts.fill(0);
-  updateTelemetryDisplays();
+resetBtn.addEventListener("click", resetSimulation);
+
+curveBtn.addEventListener("click", () => {
+    showCurveOverlay = !showCurveOverlay;
+    if (showCurveOverlay) {
+        curveBtn.innerText = "Curve Overlay: ON";
+        curveBtn.classList.add("active");
+    } else {
+        curveBtn.innerText = "Curve Overlay: OFF";
+        curveBtn.classList.remove("active");
+    }
 });
 
-overlayBtn.addEventListener("click", () => {
-  showOverlay = !showOverlay;
-  overlayBtn.innerText = showOverlay ? "Theoretical Curve: ON" : "Theoretical Curve: OFF";
-  overlayBtn.classList.toggle("active", showOverlay);
+window.addEventListener("keydown", (e) => {
+    const key = e.key.toLowerCase();
+    if (key === " ") { e.preventDefault(); actionBtn.click(); }
+    if (key === "c") { e.preventDefault(); curveBtn.click(); }
+    if (key === "r") { e.preventDefault(); resetBtn.click(); }
 });
 
-// UI Toggles & Panel Controls
-document.getElementById("panelHeader").addEventListener("click", () => {
-  document.getElementById("ui-layer").classList.toggle("collapsed");
+window.addEventListener("resize", () => {
+    resizeViewport();
+    resetSimulation();
 });
 
-let activeTabId = "tabControlsBtn";
-function switchPanelTab(targetId) {
-  activeTabId = targetId;
-  document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.id === targetId));
-  
-  document.getElementById("pageControls").style.display = targetId === "tabControlsBtn" ? "block" : "none";
-  document.getElementById("pageParams").style.display = targetId === "tabParamsBtn" ? "block" : "none";
-  document.getElementById("pageEnv").style.display = targetId === "tabEnvBtn" ? "block" : "none";
-  document.getElementById("pageGuide").style.display = targetId === "tabGuideBtn" ? "block" : "none";
+// Render Loop
+function renderLoop() {
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 1. Draw outer neon boundaries
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(leftBoundaryPts[0].x, leftBoundaryPts[0].y);
+    for(let i=1; i<leftBoundaryPts.length; i++) ctx.lineTo(leftBoundaryPts[i].x, leftBoundaryPts[i].y);
+    
+    ctx.moveTo(rightBoundaryPts[0].x, rightBoundaryPts[0].y);
+    for(let i=1; i<rightBoundaryPts.length; i++) ctx.lineTo(rightBoundaryPts[i].x, rightBoundaryPts[i].y);
+    
+    ctx.strokeStyle = "rgba(0, 229, 255, 0.7)";
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = "rgba(0, 229, 255, 0.5)";
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.restore();
+
+    const bodies = Composite.allBodies(engine.world);
+    ctx.save();
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        
+        if (b.label === "peg") {
+            ctx.beginPath();
+            ctx.arc(b.position.x, b.position.y, PEG_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+        } else if (b.label === "ball") {
+            ctx.beginPath();
+            ctx.arc(b.position.x, b.position.y, BALL_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = "#00e5ff"; 
+            ctx.fill();
+        } else if (b.label === "gate") {
+            ctx.beginPath();
+            ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
+            for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+            ctx.closePath();
+            ctx.fillStyle = "#ff3366";
+            ctx.shadowColor = "#ff3366";
+            ctx.shadowBlur = 10;
+            ctx.fill();
+        } else if (b.label === "bound" && b.vertices.length > 0) {
+            if (b.position.y > START_Y + 100 && b.position.x > leftBoundaryPts[4].x + 5 && b.position.x < rightBoundaryPts[4].x - 5) {
+                ctx.beginPath();
+                ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
+                for (let j = 1; j < b.vertices.length; j++) ctx.lineTo(b.vertices[j].x, b.vertices[j].y);
+                ctx.closePath();
+                ctx.fillStyle = "rgba(0, 229, 255, 0.1)"; 
+                ctx.strokeStyle = "rgba(0, 229, 255, 0.4)";
+                ctx.lineWidth = 1;
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+    }
+    ctx.restore();
+
+    // Mathematically Accurate Red Distribution Curve 
+    if (showCurveOverlay) {
+        ctx.save();
+        ctx.strokeStyle = "#ff3366";
+        ctx.lineWidth = 3.5;
+        ctx.shadowColor = "rgba(255, 51, 102, 0.8)";
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+
+        const baseLine = canvas.height - 2;
+        const n = PEG_ROWS;
+        const sigma = (Math.sqrt(n) / 2) * SPACING_X;
+        const centerProb = SPACING_X / (sigma * Math.sqrt(2 * Math.PI));
+        const expectedMaxBallsInCenter = targetBallCount * centerProb;
+        const ballVisualStackingHeight = BALL_RADIUS * 1.95;
+        const curveAmplitude = expectedMaxBallsInCenter * ballVisualStackingHeight;
+
+        let started = false;
+        for (let x = cx - 450; x <= cx + 450; x += 5) {
+            const exponent = -Math.pow(x - cx, 2) / (2 * Math.pow(sigma, 2));
+            const y = baseLine - (curveAmplitude * Math.exp(exponent));
+
+            if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    requestAnimationFrame(renderLoop);
 }
 
-document.querySelectorAll(".tab-btn").forEach(btn => {
-  btn.addEventListener("click", (e) => switchPanelTab(e.target.id));
-});
+// Initializer
+(function init() {
+    engine = Engine.create({ 
+        gravity: { y: 1.0 }, 
+        positionIterations: 12, 
+        velocityIterations: 12  
+    }); 
+    
+    resizeViewport();
+    buildMatrix();
+    populateHopper();
 
-// Spawn Presets Click Intercept Tracker
-document.querySelectorAll(".spawn-mode-btn").forEach(btn => {
-  btn.addEventListener("click", (e) => {
-    document.querySelectorAll(".spawn-mode-btn").forEach(b => b.classList.remove("active"));
-    e.target.classList.add("active");
-    spawnMode = e.target.getAttribute("data-mode");
-    if (isSpawning) toggleSpawnerState(); // clear operational context
-    if (spawnMode === "burst") {
-      actionBtn.innerText = "💥 TRIGGER BURST (50)";
-      actionBtn.style.backgroundColor = "#ff9900";
-    } else {
-      actionBtn.innerText = "🚀 ACTIVATE SPAWNER";
-      actionBtn.style.backgroundColor = "#00ff7f";
-    }
-  });
-});
-
-// Sliders Dynamic Input Matrix Hooks
-rowsSlider.addEventListener("input", (e) => {
-  totalRows = parseInt(e.target.value);
-  rowsTxt.innerText = `${totalRows} ROWS`;
-  initSimulationMatrix();
-});
-
-probSlider.addEventListener("input", (e) => {
-  successProb = parseFloat(e.target.value);
-  let status = "Symmetric";
-  if (successProb < 0.45) status = "Skewed Left";
-  if (successProb > 0.55) status = "Skewed Right";
-  probTxt.innerText = `${successProb.toFixed(2)} (${status})`;
-  initSimulationMatrix();
-});
-
-radiusSlider.addEventListener("input", (e) => {
-  ballRadius = parseInt(e.target.value);
-  radiusTxt.innerText = `${ballRadius}px`;
-});
-
-gravitySlider.addEventListener("input", (e) => {
-  gravity = parseFloat(e.target.value);
-  gravityTxt.innerText = `${gravity.toFixed(2)} m/s²`;
-});
-
-elasticitySlider.addEventListener("input", (e) => {
-  restitution = parseFloat(e.target.value);
-  elasticityTxt.innerText = `${restitution.toFixed(2)}`;
-});
-
-// Bottom Dropdown View Layer Toggle
-let showTelemetry = true;
-telemetryBtn.addEventListener("click", () => {
-  showTelemetry = !showTelemetry;
-  telemetryDropdown.style.display = showTelemetry ? "block" : "none";
-  telemetryBtn.innerText = showTelemetry ? "STATISTICS ▲" : "STATISTICS ▼";
-});
-
-// Keyboard Core Accelerators Hook
-window.addEventListener("keydown", (e) => {
-  switch (e.key.toLowerCase()) {
-    case " ":
-      e.preventDefault();
-      actionBtn.click();
-      break;
-    case "c":
-      e.preventDefault();
-      clearBtn.click();
-      break;
-    case "h":
-      e.preventDefault();
-      overlayBtn.click();
-      break;
-  }
-});
+    runner = Runner.create();
+    Runner.run(runner, engine);
+    
+    requestAnimationFrame(renderLoop);
+})();
